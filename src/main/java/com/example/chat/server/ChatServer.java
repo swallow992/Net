@@ -177,6 +177,17 @@ public class ChatServer {
                     case Message.TYPE_HEARTBEAT:
                         // 心跳消息，不需要特殊处理
                         break;
+                    case Message.TYPE_KEY_EXCHANGE:
+                        break;
+                    case Message.TYPE_ENCRYPTED:
+                        // 直接转发给目标用户
+                        String targetUser = (String) message.get("target");
+                        SocketChannel targetChannel = userChannels.get(targetUser);
+                        if (targetChannel != null && targetChannel.isConnected()) {
+
+                            targetChannel.write(buffer);
+                        }
+                        break;
 
                     default:
                         System.out.println("未知消息类型: " + type);

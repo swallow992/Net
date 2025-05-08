@@ -20,6 +20,8 @@ public class Message {
     public static final String TYPE_USER_LIST = "user_list";
     public static final String TYPE_SYSTEM = "system";
     public static final String TYPE_HEARTBEAT = "heartbeat";
+    public static final String TYPE_KEY_EXCHANGE = "key_exchange";
+    public static final String TYPE_ENCRYPTED = "encrypted";
     // 新增消息类型
     public static final String TYPE_CREATE_ROOM = "create_room";
     public static final String TYPE_JOIN_ROOM = "join_room";
@@ -209,5 +211,28 @@ public class Message {
         message.put("content", content);
         return message;
     }
+
+    /**
+     * 创建密钥交换消息
+     */
+    public static Message createKeyExchangeMessage(String publicKey, String algorithm, String targetUser) {
+        Message message = new Message(TYPE_KEY_EXCHANGE);
+        message.put("publicKey", publicKey);
+        message.put("algorithm", algorithm);
+        message.put("target", targetUser); // 指定接收密钥的用户
+        return message;
+    }
+
+    /**
+     * 创建加密消息
+     */
+    public static Message createEncryptedMessage(String payload, String iv, String targetUser) {
+        Message message = new Message(TYPE_ENCRYPTED);
+        message.put("payload", payload);
+        message.put("iv", iv);
+        message.put("target", targetUser); // 指定接收消息的用户
+        return message;
+    }
+
 }
 

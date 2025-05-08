@@ -19,23 +19,39 @@ public class MessageParser {
         if (json == null || json.isEmpty()) {
             return null;
         }
-        
+
         try {
-            // 简单解析JSON，提取type和其他字段
-            Map<String, String> fields = parseJson(json);
-            String type = fields.get("type");
+            Map<String, Object> fields = parseJson(json);
+            String type = (String) fields.get("type");
             if (type == null) {
                 return null;
             }
-            
+
             Message message = new Message(type);
-            for (Map.Entry<String, String> entry : fields.entrySet()) {
-                if (!"type".equals(entry.getKey())) {
-                    message.put(entry.getKey(), entry.getValue());
+            for (Map.Entry<String, Object> entry : fields.entrySet()) {
+                String key = entry.getKey();
+                if (!"type".equals(key)) {
+                    message.put(key, entry.getValue()); // 直接存入原始值（Object类型）
                 }
             }
-            
-            return message;
+
+            // 根据类型调用静态方法创建特定消息对象
+            switch (type) {
+                case Message.TYPE_KEY_EXCHANGE:
+                    return Message.createKeyExchangeMessage(
+                            (String) message.get("publicKey"),
+                            (String) message.get("algorithm"),
+                            (String) message.get("target")
+                    );
+                case Message.TYPE_ENCRYPTED:
+                    return Message.createEncryptedMessage(
+                            (String) message.get("payload"),
+                            (String) message.get("iv"),
+                            (String) message.get("target")
+                    );
+                default:
+                    return message; // 其他类型保持原有逻辑
+            }
         } catch (Exception e) {
             return null;
         }
@@ -46,33 +62,40 @@ public class MessageParser {
      * @param json JSON字符串
      * @return 字段名和值的映射
      */
-    private static Map<String, String> parseJson(String json) {
-        Map<String, String> result = new HashMap<>();
-        
-        // 去掉首尾的花括号
+    private static Map<String, Object> parseJson(String json) { // 修改返回值为 Object 类型
+        Map<String, Object> result = new HashMap<>();
         json = json.trim();
         if (json.startsWith("{") && json.endsWith("}")) {
             json = json.substring(1, json.length() - 1);
         } else {
             return result;
         }
-        
-        // 解析字段
+
         List<String> fields = splitJsonFields(json);
         for (String field : fields) {
             int colonIndex = field.indexOf(':');
             if (colonIndex > 0) {
-                String key = field.substring(0, colonIndex).trim();
-                String value = field.substring(colonIndex + 1).trim();
-                
-                // 去掉引号
-                key = removeQuotes(key);
-                value = removeQuotes(value);
-                
+                String key = removeQuotes(field.substring(0, colonIndex).trim());
+                String valueStr = removeQuotes(field.substring(colonIndex + 1).trim());
+
+                // 尝试解析值的类型（字符串、布尔、数字等）
+                Object value;
+                if (valueStr.startsWith("\"") && valueStr.endsWith("\"")) {
+                    value = valueStr.substring(1, valueStr.length() - 1); // 纯字符串
+                } else if (valueStr.equals("true") || valueStr.equals("false")) {
+                    value = Boolean.parseBoolean(valueStr); // 布尔值
+                } else if (valueStr.matches("-?\\d+(\\.\\d+)?")) { // 数字
+                    if (valueStr.contains(".")) {
+                        value = Double.parseDouble(valueStr);
+                    } else {
+                        value = Integer.parseInt(valueStr);
+                    }
+                } else {
+                    value = valueStr; // 默认保留为字符串
+                }
                 result.put(key, value);
             }
         }
-        
         return result;
     }
     

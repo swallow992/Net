@@ -1,5 +1,17 @@
 package com.example.chat.client;
 
+// 新增加密相关导入
+import com.example.chat.client.util.CryptoUtils; // 自定义加密工具类
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.KeyPair;
+import java.security.PublicKey;
+import java.security.KeyFactory;
+import java.security.SecureRandom;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -11,6 +23,7 @@ import java.awt.*;
 import java.awt.event.*;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -33,6 +46,10 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
     private NotificationManager notificationManager;
     private UserListPanel userListPanel;
     private RoomListPanel roomListPanel;
+    private KeyPair dhKeyPair;           // DH密钥对
+    private SecretKey sharedSecretKey;   // 共享密钥
+    private byte[] iv;                   // 初始化向量
+    private boolean isEncrypted = false; // 加密状态标识
 
     // 存储每个聊天室的消息历史
     private Map<String, StringBuilder> roomMessages = new HashMap<>();
@@ -160,6 +177,15 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
         emojiSelector.setEmojiListener(this);
         emojiSelector.setVisible(false);
 
+        JToggleButton encryptButton = new JToggleButton("🔒 加密");
+        encryptButton.addActionListener(e -> {
+            isEncrypted = encryptButton.isSelected();
+            if (isEncrypted) {
+                displaySystemMessage("已启用端到端加密");
+            } else {
+                displaySystemMessage("已关闭端到端加密");
+            }
+        });
         // 表情按钮
         emojiButton = new JToggleButton("😊");
         emojiButton.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 16));
@@ -173,6 +199,7 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
         sendButton.addActionListener(e -> sendMessage());
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttonPanel.add(encryptButton); // 新增
         buttonPanel.add(emojiButton);
         buttonPanel.add(sendButton);
 
@@ -200,6 +227,7 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
         getContentPane().add(topPanel, BorderLayout.NORTH);
         getContentPane().add(leftRightSplit, BorderLayout.CENTER);
         getContentPane().add(emojiSelector, BorderLayout.SOUTH);
+
     }
 
     private void loadRoomMessages(String newRoom) {
@@ -224,8 +252,28 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
 
     private void sendMessage() {
         String text = inputField.getText().trim();
-        if (!text.isEmpty() && client.isConnected()) {
-            try {
+        if (text.isEmpty() || !client.isConnected()) return;
+
+        try {
+            Message message;
+
+            // ===================== 新增代码：加密消息处理 =====================
+            if (isEncrypted) {
+                // 1. 使用共享密钥和IV加密消息
+                String encryptedPayload = CryptoUtils.encrypt(text, sharedSecretKey, iv);
+
+                // 2. 创建加密消息（目标用户写死为"Bob"，实际应通过UI选择）
+                message = Message.createEncryptedMessage(
+                        encryptedPayload,
+                        Base64.getEncoder().encodeToString(iv), // 将IV转为Base64字符串
+                        "Bob" // 目标用户
+                );
+
+                // 3. 生成新的IV（避免重复使用）
+                iv = CryptoUtils.generateIV();
+            }
+            // ===================== 保留原有逻辑：普通消息 =====================
+            else {
                 // 检查是否包含表情
                 boolean hasEmoji = false;
                 for (String emoji : EmojiSelector.EMOJIS) {
@@ -235,8 +283,7 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
                     }
                 }
 
-                // 使用消息协议类创建消息
-                Message message;
+                // 创建普通消息或富文本消息
                 if (hasEmoji) {
                     message = Message.createRichMessage(
                             (String) roomComboBox.getSelectedItem(),
@@ -249,15 +296,13 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
                             text
                     );
                 }
-                client.sendMessage(message.toJson());
-
-                // 移除本地显示消息的代码，避免消息重复显示
-                // 服务器会回传消息，客户端会在processMessage中处理
-
-                inputField.setText("");
-            } catch (IOException e) {
-                JOptionPane.showMessageDialog(this, "发送失败: " + e.getMessage());
             }
+
+            // ===================== 公共代码：发送消息 =====================
+            client.sendMessage(message.toJson());
+            inputField.setText("");
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "发送失败: " + e.getMessage());
         }
     }
 
@@ -556,12 +601,60 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
         case Message.TYPE_HEARTBEAT:
             // 心跳消息，不需要处理
             break;
-            
+
+        case Message.TYPE_KEY_EXCHANGE:
+             handleKeyExchangeMessage(message);
+             break;
+
+        case Message.TYPE_ENCRYPTED:
+             handleEncryptedMessage(message);
+             break;
         default:
             // 未知消息类型
             break;
     }
+
 }
+    // 处理密钥交换消息
+    private void handleKeyExchangeMessage(Message msg) {
+        try {
+            // 1. 解析对方公钥
+            String publicKeyStr = (String) msg.get("publicKey");
+            byte[] publicKeyBytes = Base64.getDecoder().decode(publicKeyStr);
+            PublicKey peerPublicKey = KeyFactory.getInstance("DH").generatePublic(new X509EncodedKeySpec(publicKeyBytes));
+
+            // 2. 生成共享密钥
+            sharedSecretKey = CryptoUtils.generateSharedSecret(dhKeyPair.getPrivate(), peerPublicKey);
+            isEncrypted = true;
+
+            // 更新UI状态
+            SwingUtilities.invokeLater(() -> {
+                statusLabel.setText("加密通信已启用");
+            });
+        } catch (Exception e) {
+            displaySystemMessage("密钥协商失败: " + e.getMessage());
+        }
+    }
+
+    // 处理加密消息
+    private void handleEncryptedMessage(Message msg) {
+        try {
+            // 1. 提取加密数据和IV
+            String encryptedPayload = (String) msg.get("payload");
+            String ivStr = (String) msg.get("iv");
+            byte[] ivBytes = Base64.getDecoder().decode(ivStr);
+
+            // 2. 解密消息
+            String decrypted = CryptoUtils.decrypt(encryptedPayload, sharedSecretKey, ivBytes);
+
+            // 3. 显示解密后的消息
+            String sender = (String) msg.get("sender");
+            String formattedMsg = "[" + sender + "] " + decrypted;
+            displayMessage(formattedMsg, Color.BLUE);
+        } catch (Exception e) {
+            displaySystemMessage("解密失败: " + e.getMessage());
+        }
+    }
 
     // 实现 ChatClient.ConnectionListener 接口方法
     @Override
@@ -620,6 +713,29 @@ public class ChatClientGUI extends JFrame implements ChatClient.ConnectionListen
             }
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+    private void onLoginSuccess() {
+        try {
+            // 1. 生成DH密钥对
+            dhKeyPair = CryptoUtils.generateDHKeyPair();
+            String publicKeyStr = Base64.getEncoder().encodeToString(dhKeyPair.getPublic().getEncoded());
+
+            // 2. 发送密钥交换消息给目标用户（假设目标用户为固定值或通过UI选择）
+            String targetUser = "Bob"; // 示例：固定目标用户
+            Message keyMsg = Message.createKeyExchangeMessage(publicKeyStr, "DH", targetUser);
+            client.sendMessage(keyMsg.toJson());
+
+            // 3. 生成随机IV
+            iv = new byte[16];
+            new SecureRandom().nextBytes(iv);
+
+            // 更新UI状态
+            SwingUtilities.invokeLater(() -> {
+                statusLabel.setText("已登录，正在协商加密密钥...");
+            });
+        } catch (Exception e) {
+            displaySystemMessage("密钥生成失败: " + e.getMessage());
         }
     }
 }
